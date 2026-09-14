@@ -1,7 +1,7 @@
 [project]
-name = "itmo-tg-template"
+name = "itmo-tg-bot"
 version = "0.1.0"
-description = "Учебный Telegram-бот: текстовое эхо и подключение PostgreSQL"
+description = "AI-ассистент студента: Telegram-бот с языковой моделью и историей в PostgreSQL"
 requires-python = ">=3.12,<3.13"
 
 [tool.pytest.ini_options]
