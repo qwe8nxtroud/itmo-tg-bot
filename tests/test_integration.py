@@ -120,3 +120,43 @@ async def test_real_db_password_restart_health_and_persistence(database):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await pool.close()
+
+
+async def test_storage_settings_history_isolation_and_pruning(database):
+    # Arrange
+    from app.storage import Storage, UserSettings
+
+    settings, *_ = database
+    pool = await create_pool(settings)
+    storage = Storage(pool)
+    try:
+        await storage.init_schema()
+        await storage.init_schema()  # повторный запуск безопасен
+        # Act / Assert: настройки
+        assert await storage.get_settings(1) is None
+        await storage.save_settings(1, UserSettings("study", 0.3))
+        await storage.save_settings(1, UserSettings("study", 1.0))
+        assert await storage.get_settings(1) == UserSettings("study", 1.0)
+        # Act / Assert: история, порядок и окно последних сообщений
+        for index in range(3):
+            await storage.append_exchange(1, f"q{index}", f"a{index}", keep=4)
+            await storage.append_exchange(2, f"чужой {index}", f"ответ {index}", keep=10)
+        history = await storage.get_history(1, limit=10)
+        assert [(m.role, m.content) for m in history] == [
+            ("user", "q1"),
+            ("assistant", "a1"),
+            ("user", "q2"),
+            ("assistant", "a2"),
+        ]
+        assert [m.content for m in await storage.get_history(1, limit=2)] == ["q2", "a2"]
+        assert len(await storage.get_history(2, limit=10)) == 6
+        # Act / Assert: смена режима чистит историю только своего чата
+        await storage.switch_mode(1, UserSettings("quiz", 1.0))
+        assert await storage.get_settings(1) == UserSettings("quiz", 1.0)
+        assert await storage.get_history(1, limit=10) == []
+        assert len(await storage.get_history(2, limit=10)) == 6
+        await storage.clear_history(2)
+        assert await storage.get_history(2, limit=10) == []
+        assert await storage.get_settings(2) is None
+    finally:
+        await pool.close()
