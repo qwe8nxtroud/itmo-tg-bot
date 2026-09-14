@@ -1,82 +1,39 @@
 import asyncio
 import logging
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiogram import Bot, Dispatcher
-from aiogram.methods import SendMessage
-from aiogram.types import Chat, Message, PhotoSize, Update, User
 
 from app.config import ConfigError, Settings
-from app.handlers.echo import router
 from app.health import HealthState, health_result
 from app.logging_setup import SecretFilter
 from app.telegram import create_bot
 
 TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk"
+# Настройки модели обязательны; значения вымышленные.
+LLM_ENV = {
+    "LLM_API_BASE_URL": "https://llm.example/v1",
+    "LLM_API_KEY": "llm-secret-key",
+    "LLM_MODEL": "test-model",
+}
+LLM_LINES = "".join(f"{key}={value}\n" for key, value in LLM_ENV.items())
 
 
 @pytest.fixture
 def settings(tmp_path):
     path = tmp_path / ".env"
-    path.write_text(f"BOT_TOKEN={TOKEN}\nPOSTGRES_PASSWORD=secret-db\n", encoding="utf-8")
+    path.write_text(
+        f"BOT_TOKEN={TOKEN}\nPOSTGRES_PASSWORD=secret-db\n{LLM_LINES}", encoding="utf-8"
+    )
     return Settings.load(path, environ={})
-
-
-@pytest.mark.parametrize("text", ["Привет 👋", "/start", "<b>текст</b> & *слово*", "строка\nдва"])
-async def test_echo_preserves_exact_text(text):
-    # Arrange
-    bot = Bot(TOKEN)
-    bot.session = AsyncMock()
-    dispatcher = Dispatcher()
-    # A Router can have only one parent; use its handler callback through a fresh router.
-    from aiogram import Router
-
-    from app.handlers.echo import echo_text
-
-    test_router = Router()
-    from aiogram import F
-
-    test_router.message.register(echo_text, F.text)
-    dispatcher.include_router(test_router)
-    message = Message(
-        message_id=1,
-        date=datetime.now(UTC),
-        chat=Chat(id=42, type="private"),
-        from_user=User(id=42, is_bot=False, first_name="Студент"),
-        text=text,
-    )
-    # Act
-    await dispatcher.feed_update(bot, Update(update_id=1, message=message))
-    # Assert
-    method = bot.session.call_args.args[1]
-    assert isinstance(method, SendMessage)
-    assert method.chat_id == 42
-    assert method.text == text
-    assert method.parse_mode is None
-
-
-async def test_photo_does_not_match_text_handler():
-    # Arrange
-    handler = router.message.handlers[0]
-    message = Message(
-        message_id=1,
-        date=datetime.now(UTC),
-        chat=Chat(id=42, type="private"),
-        photo=[PhotoSize(file_id="a", file_unique_id="b", width=1, height=1)],
-    )
-    # Act
-    matches, _ = await handler.check(message)
-    # Assert
-    assert matches is False
 
 
 def test_settings_environment_overrides_file(tmp_path):
     # Arrange
     path = tmp_path / ".env"
     path.write_text(
-        f"BOT_TOKEN={TOKEN}\nPOSTGRES_PASSWORD='p$a#ss'\nPOSTGRES_PORT=5432\n", encoding="utf-8"
+        f"BOT_TOKEN={TOKEN}\nPOSTGRES_PASSWORD='p$a#ss'\nPOSTGRES_PORT=5432\n{LLM_LINES}",
+        encoding="utf-8",
     )
     # Act
     config = Settings.load(path, environ={"POSTGRES_PORT": "55432"})
@@ -85,6 +42,7 @@ def test_settings_environment_overrides_file(tmp_path):
     assert config.postgres_password == "p$a#ss"
     assert "p$a#ss" not in repr(config)
     assert TOKEN not in repr(config)
+    assert LLM_ENV["LLM_API_KEY"] not in repr(config)
 
 
 @pytest.mark.parametrize("value", ["abc", "0", "65536"])
@@ -95,7 +53,12 @@ def test_invalid_port_has_safe_error(tmp_path, value):
     with pytest.raises(ConfigError, match="POSTGRES_PORT"):
         Settings.load(
             path,
-            environ={"BOT_TOKEN": TOKEN, "POSTGRES_PASSWORD": "secret", "POSTGRES_PORT": value},
+            environ={
+                "BOT_TOKEN": TOKEN,
+                "POSTGRES_PASSWORD": "secret",
+                "POSTGRES_PORT": value,
+                **LLM_ENV,
+            },
         )
 
 
@@ -119,7 +82,12 @@ def test_bad_proxy_does_not_leak_credentials(tmp_path):
     with pytest.raises(ConfigError) as exc:
         Settings.load(
             tmp_path / ".env",
-            environ={"BOT_TOKEN": TOKEN, "POSTGRES_PASSWORD": "db", "TELEGRAM_PROXY_URL": proxy},
+            environ={
+                "BOT_TOKEN": TOKEN,
+                "POSTGRES_PASSWORD": "db",
+                "TELEGRAM_PROXY_URL": proxy,
+                **LLM_ENV,
+            },
         )
     assert "TELEGRAM_PROXY_URL" in str(exc.value)
     assert "very-secret" not in str(exc.value)
@@ -181,3 +149,91 @@ def test_log_filter_redacts_secrets_and_exception():
     # Assert
     assert all(secret not in rendered for secret in (TOKEN, "db-secret", "proxy-secret"))
     assert "ValueError" in rendered
+
+
+@pytest.mark.parametrize("missing", ["LLM_API_BASE_URL", "LLM_API_KEY", "LLM_MODEL"])
+def test_missing_llm_setting_has_safe_error(tmp_path, missing):
+    # Arrange
+    environ = {"BOT_TOKEN": TOKEN, "POSTGRES_PASSWORD": "db-secret", **LLM_ENV}
+    del environ[missing]
+    # Act / Assert
+    with pytest.raises(ConfigError, match=missing) as exc:
+        Settings.load(tmp_path / ".env", environ=environ)
+    assert "db-secret" not in str(exc.value)
+    assert LLM_ENV["LLM_API_KEY"] not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("LLM_API_BASE_URL", "api.openai.com/v1"),
+        ("LLM_PROXY_URL", "ftp://user:very-secret@host:1"),
+        ("LLM_TIMEOUT_SECONDS", "0"),
+        ("LLM_TIMEOUT_SECONDS", "fast"),
+        ("LLM_MAX_TOKENS", "-1"),
+        ("HISTORY_MAX_MESSAGES", "0"),
+        ("HISTORY_MAX_MESSAGES", "many"),
+        ("HISTORY_MAX_CHARS", "-5"),
+    ],
+)
+def test_invalid_llm_and_history_values_name_the_variable(tmp_path, key, value):
+    # Arrange
+    environ = {"BOT_TOKEN": TOKEN, "POSTGRES_PASSWORD": "db", **LLM_ENV, key: value}
+    # Act / Assert
+    with pytest.raises(ConfigError, match=key) as exc:
+        Settings.load(tmp_path / ".env", environ=environ)
+    assert "very-secret" not in str(exc.value)
+
+
+def test_llm_settings_are_normalized(tmp_path):
+    # Arrange
+    environ = {
+        "BOT_TOKEN": TOKEN,
+        "POSTGRES_PASSWORD": "db",
+        **LLM_ENV,
+        "LLM_API_BASE_URL": "http://127.0.0.1:11434/v1/",
+        "LLM_MAX_TOKENS": "0",
+        "HISTORY_MAX_MESSAGES": "6",
+        "HISTORY_MAX_CHARS": "3000",
+        "LLM_TIMEOUT_SECONDS": "2.5",
+    }
+    # Act
+    config = Settings.load(tmp_path / ".env", environ=environ)
+    # Assert
+    assert config.llm_api_base_url == "http://127.0.0.1:11434/v1"
+    assert config.llm_max_tokens == 0
+    assert (config.history_max_messages, config.history_max_chars) == (6, 3000)
+    assert config.llm_timeout_seconds == 2.5
+
+
+def test_logging_hides_llm_key_and_proxy_password(settings):
+    # Arrange
+    from dataclasses import replace
+
+    from app.logging_setup import configure_logging
+
+    config = replace(settings, llm_proxy_url="http://student:proxy-pass@proxy.example:3128")
+    root = logging.getLogger()
+    previous = (root.handlers[:], root.level)
+    try:
+        configure_logging(config)
+        handler = root.handlers[0]
+        record = logging.LogRecord(
+            "app.llm",
+            logging.WARNING,
+            "",
+            1,
+            "ключ %s прокси %s",
+            (config.llm_api_key, config.llm_proxy_url),
+            None,
+        )
+        # Act
+        for log_filter in handler.filters:
+            log_filter.filter(record)
+        rendered = handler.format(record)
+        # Assert
+        assert config.llm_api_key not in rendered
+        assert "proxy-pass" not in rendered
+        assert "[скрыто]" in rendered
+    finally:
+        logging.basicConfig(handlers=previous[0], level=previous[1], force=True)

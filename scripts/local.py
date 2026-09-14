@@ -21,6 +21,7 @@ def prepare_env(
     *,
     cloud: bool,
     ask: Callable[[str], str] = getpass.getpass,
+    ask_visible: Callable[[str], str] = input,
     environ: Mapping[str, str] | None = None,
 ) -> Path:
     path = root / (".env.cloud" if cloud else ".env")
@@ -47,9 +48,18 @@ def prepare_env(
         updates["TELEGRAM_PROXY_URL"] = ask(
             "URL HTTP/SOCKS5 прокси (ввод скрыт; локально Enter — без прокси): "
         ).strip()
-    merged = {**values, **updates}
-    if cloud and not merged.get("TELEGRAM_PROXY_URL"):
+    if cloud and not {**values, **updates}.get("TELEGRAM_PROXY_URL"):
         raise ConfigError("Для облака необходимо указать внешний прокси Telegram.")
+    # Настройки языковой модели: адрес и имя модели видимы, ключ — секрет.
+    if not values.get("LLM_API_BASE_URL"):
+        updates["LLM_API_BASE_URL"] = ask_visible(
+            "Адрес OpenAI-совместимого API (например https://api.openai.com/v1): "
+        ).strip()
+    if not values.get("LLM_API_KEY"):
+        updates["LLM_API_KEY"] = ask("Ключ API языковой модели (ввод скрыт): ").strip()
+    if not values.get("LLM_MODEL"):
+        updates["LLM_MODEL"] = ask_visible("Имя модели (например gpt-4o-mini): ").strip()
+    merged = {**values, **updates}
     Settings.load(path, environ=merged)
     if not path.exists():
         private_write(path, "# Секретные настройки. Не добавляйте этот файл в Git.\n")

@@ -25,6 +25,16 @@ class Settings:
     postgres_user: str = "bot"
     log_level: str = "INFO"
     health_port: int = 8080
+    # Языковая модель: OpenAI-совместимый API (chat completions).
+    llm_api_base_url: str = ""
+    llm_api_key: str = field(default="", repr=False)
+    llm_model: str = ""
+    llm_proxy_url: str = field(default="", repr=False)
+    llm_timeout_seconds: float = 60.0
+    llm_max_tokens: int = 1024
+    # Ограничения истории диалога, передаваемой модели.
+    history_max_messages: int = 20
+    history_max_chars: int = 12000
 
     @classmethod
     def load(
@@ -47,6 +57,54 @@ class Settings:
             except ValueError:
                 raise ConfigError(f"{key}: нужен номер порта от 1 до 65535.") from None
 
+        def positive_int(key: str, default: str) -> int:
+            try:
+                result = int(value(key, default))
+                if result <= 0:
+                    raise ValueError
+                return result
+            except ValueError:
+                raise ConfigError(f"{key}: нужно целое число больше нуля.") from None
+
+        def non_negative_int(key: str, default: str) -> int:
+            try:
+                result = int(value(key, default))
+                if result < 0:
+                    raise ValueError
+                return result
+            except ValueError:
+                raise ConfigError(f"{key}: нужно целое число не меньше нуля.") from None
+
+        def positive_float(key: str, default: str) -> float:
+            try:
+                result = float(value(key, default))
+                if result <= 0:
+                    raise ValueError
+                return result
+            except ValueError:
+                raise ConfigError(f"{key}: нужно число больше нуля.") from None
+
+        def proxy_url(key: str) -> str:
+            proxy = value(key)
+            if proxy:
+                try:
+                    parsed = urlsplit(proxy)
+                    if (
+                        parsed.scheme not in {"http", "socks5"}
+                        or not parsed.hostname
+                        or not parsed.port
+                        or parsed.path not in {"", "/"}
+                        or parsed.query
+                        or parsed.fragment
+                    ):
+                        raise ValueError
+                except ValueError:
+                    raise ConfigError(
+                        f"{key}: нужен http://host:port или socks5://host:port; "
+                        "при необходимости добавьте user:password@."
+                    ) from None
+            return proxy
+
         token = value("BOT_TOKEN")
         try:
             validate_token(token)
@@ -55,35 +113,46 @@ class Settings:
         password = value("POSTGRES_PASSWORD")
         if not password:
             raise ConfigError("POSTGRES_PASSWORD: пароль базы данных не задан.")
-        proxy = value("TELEGRAM_PROXY_URL")
-        if proxy:
-            try:
-                parsed = urlsplit(proxy)
-                if (
-                    parsed.scheme not in {"http", "socks5"}
-                    or not parsed.hostname
-                    or not parsed.port
-                    or parsed.path not in {"", "/"}
-                    or parsed.query
-                    or parsed.fragment
-                ):
-                    raise ValueError
-            except ValueError:
-                raise ConfigError(
-                    "TELEGRAM_PROXY_URL: нужен http://host:port или socks5://host:port; "
-                    "при необходимости добавьте user:password@."
-                ) from None
+        proxy = proxy_url("TELEGRAM_PROXY_URL")
         level = value("LOG_LEVEL", "INFO").upper()
         if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ConfigError("LOG_LEVEL: используйте DEBUG, INFO, WARNING, ERROR или CRITICAL.")
+        postgres_port = port("POSTGRES_PORT", "5432")
+        health_port = port("HEALTH_PORT", "8080")
+
+        base_url = value("LLM_API_BASE_URL").rstrip("/")
+        parsed_base = urlsplit(base_url)
+        if parsed_base.scheme not in {"http", "https"} or not parsed_base.hostname:
+            raise ConfigError(
+                "LLM_API_BASE_URL: укажите адрес OpenAI-совместимого API, "
+                "например https://api.openai.com/v1."
+            )
+        api_key = value("LLM_API_KEY")
+        if not api_key:
+            raise ConfigError(
+                "LLM_API_KEY: ключ доступа к API модели не задан "
+                "(для локальной модели без авторизации подойдёт любое непустое значение)."
+            )
+        model = value("LLM_MODEL")
+        if not model:
+            raise ConfigError("LLM_MODEL: укажите имя модели у выбранного провайдера.")
+
         return cls(
             bot_token=token,
             postgres_password=password,
             telegram_proxy_url=proxy,
             postgres_host=value("POSTGRES_HOST", "127.0.0.1"),
-            postgres_port=port("POSTGRES_PORT", "5432"),
+            postgres_port=postgres_port,
             postgres_db=value("POSTGRES_DB", "bot"),
             postgres_user=value("POSTGRES_USER", "bot"),
             log_level=level,
-            health_port=port("HEALTH_PORT", "8080"),
+            health_port=health_port,
+            llm_api_base_url=base_url,
+            llm_api_key=api_key,
+            llm_model=model,
+            llm_proxy_url=proxy_url("LLM_PROXY_URL"),
+            llm_timeout_seconds=positive_float("LLM_TIMEOUT_SECONDS", "60"),
+            llm_max_tokens=non_negative_int("LLM_MAX_TOKENS", "1024"),
+            history_max_messages=positive_int("HISTORY_MAX_MESSAGES", "20"),
+            history_max_chars=positive_int("HISTORY_MAX_CHARS", "12000"),
         )

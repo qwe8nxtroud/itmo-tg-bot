@@ -7,31 +7,54 @@ from dotenv import dotenv_values
 from scripts.common import CommandError, run_command
 from scripts.local import compose_command, prepare_env
 
+# Ответы на вопросы о модели: адрес и имя вводятся открыто, ключ — скрыто.
+LLM_VISIBLE = ["https://llm.example/v1", "test-model"]
+LLM_KEY = "llm-secret-key"
+
+
+def visible_prompts():
+    return Mock(side_effect=LLM_VISIBLE)
+
 
 def test_first_setup_and_repeat_preserve_secrets(tmp_path):
     # Arrange
     root = tmp_path / "Курс с пробелами"
     root.mkdir()
-    prompt = Mock(side_effect=["123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk", ""])
+    prompt = Mock(side_effect=["123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk", "", LLM_KEY])
     # Act
-    path = prepare_env(root, cloud=False, ask=prompt, environ={})
+    path = prepare_env(root, cloud=False, ask=prompt, ask_visible=visible_prompts(), environ={})
     first = path.read_bytes()
-    prepare_env(root, cloud=False, ask=Mock(side_effect=AssertionError), environ={})
+    prepare_env(
+        root,
+        cloud=False,
+        ask=Mock(side_effect=AssertionError),
+        ask_visible=Mock(side_effect=AssertionError),
+        environ={},
+    )
     # Assert
     assert path.read_bytes() == first
     assert len(dotenv_values(path)["POSTGRES_PASSWORD"]) >= 24
     assert dotenv_values(path)["POSTGRES_HOST"] == "127.0.0.1"
+    assert dotenv_values(path)["LLM_API_KEY"] == LLM_KEY
+    assert dotenv_values(path)["LLM_MODEL"] == "test-model"
 
 
 def test_cloud_requires_proxy_and_has_separate_password(tmp_path):
     # Arrange
     token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk"
-    prepare_env(tmp_path, cloud=False, ask=Mock(side_effect=[token, ""]), environ={})
+    prepare_env(
+        tmp_path,
+        cloud=False,
+        ask=Mock(side_effect=[token, "", LLM_KEY]),
+        ask_visible=visible_prompts(),
+        environ={},
+    )
     # Act
     path = prepare_env(
         tmp_path,
         cloud=True,
-        ask=Mock(side_effect=[token, "socks5://user:p%40ss@proxy:1080"]),
+        ask=Mock(side_effect=[token, "socks5://user:p%40ss@proxy:1080", LLM_KEY]),
+        ask_visible=visible_prompts(),
         environ={},
     )
     # Assert
@@ -382,7 +405,8 @@ def test_setup_only_checks_real_credentials_without_starting_bot(tmp_path, monke
     prepare_env(
         tmp_path,
         cloud=False,
-        ask=Mock(side_effect=["123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk", ""]),
+        ask=Mock(side_effect=["123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk", "", LLM_KEY]),
+        ask_visible=visible_prompts(),
         environ={},
     )
     commands = Mock(return_value="")

@@ -25,18 +25,11 @@ class SecretFilter(logging.Filter):
 
 
 def configure_logging(settings: Settings) -> None:
-    proxy = urlsplit(settings.telegram_proxy_url)
+    secrets = [settings.bot_token, settings.postgres_password, settings.llm_api_key]
+    for proxy_url in (settings.telegram_proxy_url, settings.llm_proxy_url):
+        proxy = urlsplit(proxy_url)
+        secrets += [proxy_url, proxy.password or "", unquote(proxy.password or "")]
     handler = logging.StreamHandler()
-    handler.addFilter(
-        SecretFilter(
-            [
-                settings.bot_token,
-                settings.postgres_password,
-                settings.telegram_proxy_url,
-                proxy.password or "",
-                unquote(proxy.password or ""),
-            ]
-        )
-    )
+    handler.addFilter(SecretFilter(secrets))
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logging.basicConfig(level=settings.log_level, handlers=[handler], force=True)
