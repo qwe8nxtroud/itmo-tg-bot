@@ -98,11 +98,10 @@ def test_build_messages_keeps_request_when_it_exceeds_budget():
     ]
 
 
-@pytest.mark.parametrize(
-    ("text", "expected_parts"),
-    [("а" * 4096, 1), ("а" * 4097, 2), ("б" * 10_000, 3), ("", 1)],
-)
-def test_split_text_hard_cut(text, expected_parts):
+@pytest.mark.parametrize(("length", "expected_parts"), [(4096, 1), (4097, 2), (10_000, 3), (0, 1)])
+def test_split_text_hard_cut(length, expected_parts):
+    # Arrange: строка без разделителей строится внутри теста, а не в id параметра.
+    text = "б" * length
     # Act
     parts = split_text(text)
     # Assert

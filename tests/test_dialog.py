@@ -312,6 +312,8 @@ async def test_group_chat_is_ignored(harness):
 
 
 async def test_typing_status_is_sent_while_answering(harness):
+    # Arrange: «сетевой» вызов длиннее разрешения таймера Windows (~16 мс).
+    harness.llm.delay = 0.2
     # Act
     await harness.send(ALICE, "вопрос")
     # Assert

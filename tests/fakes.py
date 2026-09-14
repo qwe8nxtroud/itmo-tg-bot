@@ -47,13 +47,14 @@ class FakeLLM:
 
     model = "test-model"
 
-    def __init__(self, *responses: str | Exception) -> None:
+    def __init__(self, *responses: str | Exception, delay: float = 0.0) -> None:
         self.responses = deque(responses)
         self.calls: list[tuple[list[dict[str, str]], float]] = []
+        self.delay = delay
 
     async def complete(self, messages: list[dict[str, str]], *, temperature: float) -> LLMResponse:
         self.calls.append(([dict(message) for message in messages], temperature))
-        await asyncio.sleep(0.01)  # уступаем цикл событий, как настоящий сетевой вызов
+        await asyncio.sleep(self.delay)  # уступаем цикл событий, как настоящий сетевой вызов
         response = self.responses.popleft() if self.responses else "ответ модели"
         if isinstance(response, Exception):
             raise response

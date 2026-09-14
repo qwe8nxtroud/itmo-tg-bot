@@ -164,13 +164,13 @@ async def test_non_json_body(session, api):
 
 
 async def test_connection_refused_is_unavailable(session, unused_tcp_port):
-    # Arrange
+    # Arrange: на Windows отказ соединения с localhost приходит с задержкой около секунды.
     dead = LLMClient(
         session,
         base_url=f"http://127.0.0.1:{unused_tcp_port}/v1",
         api_key=API_KEY,
         model="m",
-        timeout=1.0,
+        timeout=10.0,
     )
     # Act / Assert
     with pytest.raises(LLMUnavailableError) as exc:
