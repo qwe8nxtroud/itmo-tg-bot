@@ -32,9 +32,15 @@ class Settings:
     llm_proxy_url: str = field(default="", repr=False)
     llm_timeout_seconds: float = 60.0
     llm_max_tokens: int = 1024
+    llm_api_project: str = ""
     # Ограничения истории диалога, передаваемой модели.
     history_max_messages: int = 20
     history_max_chars: int = 12000
+    # ЛР2: агент и MCP-сервер.
+    schedule_path: Path = Path("data/schedule.json")
+    weather_timeout_seconds: float = 5.0
+    mcp_call_timeout_seconds: float = 20.0
+    agent_temperature: float = 0.2
 
     @classmethod
     def load(
@@ -137,6 +143,15 @@ class Settings:
         if not model:
             raise ConfigError("LLM_MODEL: укажите имя модели у выбранного провайдера.")
 
+        def unit_interval(key: str, default: str) -> float:
+            try:
+                result = float(value(key, default))
+                if not 0.0 <= result <= 1.0:
+                    raise ValueError
+                return result
+            except ValueError:
+                raise ConfigError(f"{key}: нужно число от 0 до 1.") from None
+
         return cls(
             bot_token=token,
             postgres_password=password,
@@ -155,4 +170,9 @@ class Settings:
             llm_max_tokens=non_negative_int("LLM_MAX_TOKENS", "1024"),
             history_max_messages=positive_int("HISTORY_MAX_MESSAGES", "20"),
             history_max_chars=positive_int("HISTORY_MAX_CHARS", "12000"),
+            llm_api_project=value("LLM_API_PROJECT").strip(),
+            schedule_path=Path(value("SCHEDULE_PATH", "data/schedule.json")),
+            weather_timeout_seconds=positive_float("WEATHER_TIMEOUT_SECONDS", "5"),
+            mcp_call_timeout_seconds=positive_float("MCP_CALL_TIMEOUT_SECONDS", "20"),
+            agent_temperature=unit_interval("AGENT_TEMPERATURE", "0.2"),
         )
