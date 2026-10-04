@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
-from aiogram import Bot, Dispatcher
+from aiogram import Bot
 from aiogram.methods import SendChatAction, SendMessage
 from aiogram.types import Chat, Message, PhotoSize, Update, User
 
@@ -20,19 +20,16 @@ from app.handlers.dialog import (
     RESET_TEXT,
     START_TEXT,
     UNKNOWN_COMMAND_TEXT,
-    router,
 )
 from app.llm import LLMEmptyResponseError, LLMTimeoutError, LLMUnavailableError
 from app.prompts import QUIZ, STUDY, TRANSLATE
 from app.storage import UserSettings
+from tests.bot_harness import dispatcher
 from tests.fakes import FakeLLM, FakeStorage
 
 TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk"
 ALICE, BOB = 1001, 1002
 
-# Роутер может быть подключён только к одному диспетчеру, поэтому он общий для модуля.
-dispatcher = Dispatcher()
-dispatcher.include_router(router)
 counter = itertools.count(1)
 
 
@@ -44,7 +41,9 @@ class Harness:
     ):
         self.bot = Bot(TOKEN)
         self.bot.session = AsyncMock()
-        self.storage = FakeStorage()
+        # Эти тесты проверяют поведение ЛР1: пользователь в режиме /study (с ЛР2 по
+        # умолчанию включён агент, его обработку проверяет tests/test_agent_handlers.py).
+        self.storage = FakeStorage(default_settings=UserSettings("study", 0.7))
         self.llm = llm or FakeLLM()
         self.assistant = Assistant(
             self.storage,  # type: ignore[arg-type]
@@ -88,7 +87,7 @@ async def test_start_describes_commands(harness):
     assert harness.llm.calls == []
 
 
-async def test_text_goes_to_model_with_default_mode_and_temperature(harness):
+async def test_text_goes_to_model_with_study_mode_and_temperature(harness):
     # Arrange
     harness.llm.responses.append("Список изменяем, кортеж — нет.")
     # Act

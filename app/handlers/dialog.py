@@ -1,13 +1,16 @@
 """Обработчики Telegram: команды режимов и настроек, текстовые сообщения в личном чате."""
 
 import logging
+import uuid
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import BotCommand, Message
 from aiogram.utils.chat_action import ChatActionSender
 
+from app.agent import Agent, AgentRequest
 from app.assistant import TEMPERATURES, Assistant
+from app.handlers.agent import confirmation_keyboard
 from app.llm import LLMEmptyResponseError, LLMError, LLMTimeoutError
 from app.prompts import DEFAULT_MODE, MODES
 
@@ -22,6 +25,10 @@ router.message.filter(F.chat.type == "private")
 BOT_COMMANDS = [
     BotCommand(command="start", description="Что умеет бот"),
     *(BotCommand(command=m.command, description=m.summary.capitalize()) for m in MODES.values()),
+    BotCommand(command="tools", description="Что агент умеет через MCP"),
+    BotCommand(command="timezone", description="Часовой пояс для напоминаний"),
+    BotCommand(command="why", description="Почему агент так решил"),
+    BotCommand(command="week", description="Расписание на неделю"),
     BotCommand(command="settings", description="Режим, модель и temperature"),
     BotCommand(command="reset", description="Очистить историю диалога"),
 ]
@@ -31,7 +38,12 @@ _TEMPERATURE_LIST = ", ".join(f"{t:.1f}" for t in TEMPERATURES)
 START_TEXT = (
     "Привет! Я AI-ассистент студента.\n\n"
     f"Режимы (по умолчанию включён /{DEFAULT_MODE}):\n{_MODE_LIST}\n\n"
-    "Команды:\n"
+    "Команды агента:\n"
+    "/tools — что я умею через инструменты (погода, расписание, напоминания)\n"
+    "/timezone <зона> — часовой пояс для напоминаний, например /timezone Europe/Moscow\n"
+    "/why — почему я выбрал то или иное действие в последнем запросе\n"
+    "/week — расписание на текущую неделю\n\n"
+    "Общие команды:\n"
     "/settings — режим, модель и temperature\n"
     "/reset — очистить историю диалога\n\n"
     "Просто напиши сообщение — отвечу в активном режиме."
@@ -86,15 +98,23 @@ async def on_mode(message: Message, command: CommandObject, assistant: Assistant
 
 
 @router.message(Command("settings"))
-async def on_settings(message: Message, command: CommandObject, assistant: Assistant) -> None:
+async def on_settings(
+    message: Message, command: CommandObject, assistant: Assistant, agent: Agent | None = None
+) -> None:
     argument = (command.args or "").strip().replace(",", ".")
     if not argument:
         settings = await assistant.get_settings(message.chat.id)
         mode = MODES[settings.mode]
+        agent_note = (
+            f" (в режиме агента используется {agent.temperature:.1f} из AGENT_TEMPERATURE: "
+            "выбор инструмента должен быть воспроизводимым)"
+            if agent is not None and mode.command == "agent"
+            else ""
+        )
         await message.answer(
             f"Режим: {mode.title} (/{mode.command})\n"
             f"Модель: {assistant.model}\n"
-            f"Temperature: {settings.temperature:.1f}\n\n"
+            f"Temperature: {settings.temperature:.1f}{agent_note}\n\n"
             f"Изменить temperature: /settings <значение>, где значение — {_TEMPERATURE_LIST}",
             parse_mode=None,
         )
@@ -127,21 +147,39 @@ async def on_unknown_command(message: Message) -> None:
 
 
 @router.message(F.text)
-async def on_text(message: Message, assistant: Assistant) -> None:
+async def on_text(message: Message, assistant: Assistant, agent: Agent | None = None) -> None:
+    # Идентификатор запроса связывает записи журнала; Telegram ID в журнал не пишется.
+    request_id = uuid.uuid4().hex[:8]
+    keyboard = None
     # Пока ответ формируется, пользователь видит статус «печатает…».
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         try:
-            answer = await assistant.answer(message.chat.id, message.text)
+            if agent is None:
+                answer = await assistant.answer(message.chat.id, message.text)
+            else:
+                reply = await agent.reply(
+                    AgentRequest(
+                        user_id=message.from_user.id,
+                        chat_id=message.chat.id,
+                        message_id=message.message_id,
+                        text=message.text,
+                        request_id=request_id,
+                    )
+                )
+                answer = reply.text
+                keyboard = confirmation_keyboard(reply.action) if reply.action else None
         except LLMError as error:
             await message.answer(error_text(error), parse_mode=None)
             return
         except Exception:
             # Трассировка попадает в лог через фильтр секретов, пользователю — короткий текст.
-            logger.exception("Не удалось ответить на сообщение в чате %s", message.chat.id)
+            logger.exception("Запрос %s: не удалось ответить на сообщение", request_id)
             await message.answer(ERROR_INTERNAL_TEXT, parse_mode=None)
             return
-    for part in split_text(answer):
-        await message.answer(part, parse_mode=None)
+    parts = split_text(answer)
+    for index, part in enumerate(parts):
+        last = index == len(parts) - 1
+        await message.answer(part, parse_mode=None, reply_markup=keyboard if last else None)
 
 
 @router.message()

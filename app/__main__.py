@@ -6,13 +6,17 @@ import aiohttp
 from aiogram import Dispatcher
 from aiohttp_socks import ProxyConnector
 
+from app.agent import Agent
 from app.assistant import Assistant
 from app.config import ConfigError, Settings
 from app.db import create_pool
-from app.handlers.dialog import BOT_COMMANDS, router
+from app.handlers.agent import router as agent_router
+from app.handlers.dialog import BOT_COMMANDS
+from app.handlers.dialog import router as dialog_router
 from app.health import HealthState, start_health_server
 from app.llm import LLMClient
 from app.logging_setup import configure_logging
+from app.mcp_client import McpGateway
 from app.storage import Storage
 from app.telegram import create_bot
 
@@ -30,6 +34,7 @@ async def run(settings: Settings) -> None:
     bot = create_bot(settings)
     runner = None
     llm_session = None
+    gateway = None
     try:
         state.pool = await create_pool(settings)
         logger.info("PostgreSQL подключён: SELECT 1 выполнен.")
@@ -46,29 +51,47 @@ async def run(settings: Settings) -> None:
         storage = Storage(state.pool)
         await storage.init_schema()
         llm_session = create_llm_session(settings)
+        llm = LLMClient(
+            llm_session,
+            base_url=settings.llm_api_base_url,
+            api_key=settings.llm_api_key,
+            model=settings.llm_model,
+            timeout=settings.llm_timeout_seconds,
+            max_tokens=settings.llm_max_tokens,
+            project=settings.llm_api_project,
+        )
         assistant = Assistant(
             storage,
-            LLMClient(
-                llm_session,
-                base_url=settings.llm_api_base_url,
-                api_key=settings.llm_api_key,
-                model=settings.llm_model,
-                timeout=settings.llm_timeout_seconds,
-                max_tokens=settings.llm_max_tokens,
-            ),
+            llm,
+            history_max_messages=settings.history_max_messages,
+            history_max_chars=settings.history_max_chars,
+        )
+        # MCP-сервер запускается дочерним процессом; если он не поднялся, бот работает
+        # без инструментов и пытается переподключиться в фоне.
+        gateway = McpGateway.for_settings(settings)
+        await gateway.start()
+        agent = Agent(
+            assistant,
+            storage,
+            llm,
+            gateway,
+            temperature=settings.agent_temperature,
             history_max_messages=settings.history_max_messages,
             history_max_chars=settings.history_max_chars,
         )
         async with asyncio.timeout(30):
             await bot.set_my_commands(BOT_COMMANDS)
         dispatcher = Dispatcher()
-        dispatcher.include_router(router)
+        # Команды агента раньше общего обработчика неизвестных команд и текста.
+        dispatcher.include_router(agent_router)
+        dispatcher.include_router(dialog_router)
         runner = await start_health_server(state, settings.health_port)
         state.polling_task = asyncio.create_task(
             dispatcher.start_polling(
                 bot,
                 db=state.pool,
                 assistant=assistant,
+                agent=agent,
                 allowed_updates=dispatcher.resolve_used_update_types(),
                 close_bot_session=False,
             )
@@ -82,6 +105,8 @@ async def run(settings: Settings) -> None:
             await asyncio.gather(state.polling_task, return_exceptions=True)
         if runner:
             await runner.cleanup()
+        if gateway:
+            await gateway.close()
         if llm_session:
             await llm_session.close()
         await bot.session.close()
