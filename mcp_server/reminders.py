@@ -1,5 +1,6 @@
 """Запись напоминаний в PostgreSQL с защитой от повторов по ключу идемпотентности."""
 
+import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
@@ -51,25 +52,31 @@ class PgReminderStore:
     def __init__(self, config: PgConfig) -> None:
         self._config = config
         self._pool: asyncpg.Pool | None = None
+        # Два первых одновременных вызова не должны создать два пула.
+        self._lock = asyncio.Lock()
 
     async def close(self) -> None:
         if self._pool is not None:
             await self._pool.close()
 
     async def _get_pool(self) -> asyncpg.Pool:
-        if self._pool is None:
-            self._pool = await asyncpg.create_pool(
-                host=self._config.host,
-                port=self._config.port,
-                database=self._config.database,
-                user=self._config.user,
-                password=self._config.password,
-                min_size=1,
-                max_size=2,
-                timeout=5,
-                command_timeout=5,
-            )
+        async with self._lock:
+            if self._pool is None:
+                self._pool = await self._create_pool()
         return self._pool
+
+    async def _create_pool(self) -> asyncpg.Pool:
+        return await asyncpg.create_pool(
+            host=self._config.host,
+            port=self._config.port,
+            database=self._config.database,
+            user=self._config.user,
+            password=self._config.password,
+            min_size=1,
+            max_size=2,
+            timeout=5,
+            command_timeout=5,
+        )
 
     async def create(
         self, *, owner_id: int, key: uuid.UUID, text: str, remind_at: datetime, timezone: str

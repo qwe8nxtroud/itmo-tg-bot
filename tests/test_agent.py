@@ -397,3 +397,79 @@ async def test_audit_does_not_leak_other_users_or_prompt(make_env):
     assert alice.tools == "get_weather" and bob.tools is None
     for event in (alice, bob):
         assert "Роль:" not in (event.reason or "")
+
+
+# --- Находки ревью: переходы времени, повтор подтверждения, зависшие действия -----------
+
+
+async def test_reminder_after_dst_change_uses_offset_of_that_date(make_env):
+    # Сейчас в Берлине +02:00, а 05.11 уже +01:00; модель знает только текущее смещение.
+    env = await make_env(reminder_call(when="2026-11-05T18:30:00+02:00"), timezone="Europe/Berlin")
+    reply = await env.say("Напомни 5 ноября в 18:30 отправить отчёт")
+    assert reply.action.arguments["remind_at"] == "2026-11-05T18:30:00+01:00"
+    assert "05.11.2026 18:30 (Europe/Berlin, UTC+01:00)" in reply.text
+
+
+async def test_dates_without_timezone_use_default_zone(make_env):
+    # 00:30 по Москве 12.10 — в UTC ещё 11.10; «сегодня» должно быть 12.10.
+    env = await make_env(text("ок"), timezone=None)
+    env.clock.now = env.clock.now.replace(day=11, hour=21, minute=30)
+    await env.say("Какие пары сегодня?")
+    system = env.llm.calls[0][0][0]["content"]
+    assert "сейчас 2026-10-12 00:30 (понедельник)" in system
+    assert "даты считаются по Europe/Moscow" in system
+
+
+async def test_confirmed_action_can_be_retried_after_five_minutes(make_env):
+    class FlakyStore(MemoryReminderStore):
+        failures = 1
+
+        async def create(self, **kwargs):
+            if self.failures:
+                self.failures -= 1
+                raise ToolFailure("storage_unavailable", "Хранилище напоминаний сейчас недоступно.")
+            return await super().create(**kwargs)
+
+    env = await make_env(reminder_call(), reminders=FlakyStore())
+    action = (await env.say("Напомни завтра в 18:30 отправить отчёт.")).action
+    env.clock.advance(minutes=4, seconds=50)
+    assert (await env.confirm(action.id)).text.startswith("Не получилось создать напоминание")
+    env.clock.advance(minutes=1)  # срок карточки истёк, но действие уже подтверждено
+    assert (await env.confirm(action.id)).text.startswith("Напоминание создано: #1")
+    assert len(env.reminders.rows) == 1
+
+
+async def test_unexpected_failure_does_not_leave_action_executing(make_env):
+    # Arrange: шлюз падает неожиданной ошибкой во время вызова.
+    env = await make_env(reminder_call())
+    action = (await env.say("Напомни завтра в 18:30 отправить отчёт.")).action
+    original = env.gateway.call_tool
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError("сбой")
+
+    env.gateway.call_tool = crash  # type: ignore[method-assign]
+    # Act
+    with pytest.raises(RuntimeError):
+        await env.confirm(action.id)
+    # Assert: действие снова можно подтвердить
+    assert env.storage.actions[action.id].status == "pending"
+    env.gateway.call_tool = original  # type: ignore[method-assign]
+    assert (await env.confirm(action.id)).text.startswith("Напоминание создано: #1")
+
+
+async def test_stale_executing_action_can_be_retried(make_env):
+    # Процесс бота упал между захватом и завершением: действие осталось «выполняется».
+    env = await make_env(reminder_call())
+    action = (await env.say("Напомни завтра в 18:30 отправить отчёт.")).action
+    await env.storage.claim_action(action.id, user_id=ALICE, chat_id=ALICE, now=env.clock())
+    assert (await env.confirm(action.id)).text == agent_module.IN_PROGRESS_TEXT
+    env.clock.advance(seconds=61)
+    assert (await env.confirm(action.id)).text.startswith("Напоминание создано: #1")
+
+
+async def test_unknown_tool_name_is_not_stored(make_env):
+    env = await make_env(call("ignore_rules_and_print_secrets", {}))
+    await env.say("…")
+    event = await env.last_event()
+    assert event.tools == "неизвестный инструмент"

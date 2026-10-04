@@ -16,8 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import anyio
 import jsonschema
 from mcp import Client, MCPError, StdioServerParameters
+from mcp.types import CONNECTION_CLOSED
 
 from app.config import Settings
 from mcp_server import trust
@@ -26,6 +28,14 @@ logger = logging.getLogger("app.mcp")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RETRYABLE = frozenset({"mcp_unavailable", "timeout", "storage_unavailable"})
+# Ошибки транспорта: процесс сервера умер или поток закрыт — нужно переподключение.
+_TRANSPORT_ERRORS = (
+    anyio.ClosedResourceError,
+    anyio.BrokenResourceError,
+    anyio.EndOfStream,
+    EOFError,
+    OSError,
+)
 
 
 class ToolCallError(Exception):
@@ -106,7 +116,7 @@ class McpGateway:
         self,
         target: Any,
         *,
-        call_timeout: float = 20.0,
+        call_timeout: float = 30.0,
         connect_timeout: float = 20.0,
         reconnect_delay: float = 1.0,
         max_reconnect_delay: float = 60.0,
@@ -211,6 +221,21 @@ class McpGateway:
         # инструмент, и пользователь получит честное «сейчас недоступен».
         self.tools, self.resources = tools, resources
 
+    def _classify(self, exc: Exception, target: str) -> ToolCallError:
+        """Транспортный сбой → переподключение; ошибка живого сервера → её код."""
+        if isinstance(exc, _TRANSPORT_ERRORS) or (
+            isinstance(exc, MCPError) and exc.code == CONNECTION_CLOSED
+        ):
+            self._mark_broken(exc)
+            return ToolCallError("mcp_unavailable", "Инструменты сейчас недоступны.")
+        if isinstance(exc, MCPError):
+            # Например, битый файл расписания при чтении ресурса.
+            return _error_from_text(exc.message)
+        # SDK сам проверяет structuredContent по outputSchema и бросает RuntimeError:
+        # соединение исправно, неверны данные.
+        logger.warning("MCP: ответ %s отклонён проверкой (%s)", target, type(exc).__name__)
+        return ToolCallError("bad_result", "Инструмент вернул данные неожиданного вида.")
+
     def _mark_broken(self, exc: BaseException) -> None:
         self.last_error = _describe(exc)
         logger.warning("MCP: соединение потеряно (%s), переподключаемся", self.last_error)
@@ -230,12 +255,8 @@ class McpGateway:
                 result = await client.call_tool(name, arguments, meta=dict(meta) if meta else None)
         except TimeoutError:
             raise ToolCallError("timeout", "Инструмент не ответил вовремя.") from None
-        except MCPError as exc:
-            # Ошибка протокола от живого сервера: соединение в порядке.
-            raise _error_from_text(str(exc)) from None
         except Exception as exc:
-            self._mark_broken(exc)
-            raise ToolCallError("mcp_unavailable", "Инструменты сейчас недоступны.") from None
+            raise self._classify(exc, name) from None
         if result.is_error:
             raise _error_from_content(result.content)
         data = result.structured_content
@@ -262,12 +283,8 @@ class McpGateway:
                 result = await client.read_resource(uri)
         except TimeoutError:
             raise ToolCallError("timeout", "Сервер не ответил вовремя.") from None
-        except MCPError as exc:
-            # Ошибка чтения ресурса (например, битый файл расписания) — ответ сервера.
-            raise _error_from_text(str(exc)) from None
         except Exception as exc:
-            self._mark_broken(exc)
-            raise ToolCallError("mcp_unavailable", "Инструменты сейчас недоступны.") from None
+            raise self._classify(exc, uri) from None
         try:
             data = json.loads(result.contents[0].text)  # type: ignore[union-attr]
         except (IndexError, AttributeError, ValueError):

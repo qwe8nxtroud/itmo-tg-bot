@@ -11,7 +11,11 @@ import asyncpg
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 # Произвольная константа: блокировка не даёт двум экземплярам применять миграции одновременно.
 _MIGRATION_LOCK = 724_001
+# Пространство блокировок «подготовка действия пользователя» (двухключевая форма).
+_ACTION_LOCK_SPACE = 7240
 EVENTS_PER_USER = 50
+# Действие в «выполняется» дольше этого времени считается зависшим и может быть повторено.
+STALE_EXECUTION = timedelta(seconds=60)
 
 
 @dataclass(frozen=True)
@@ -39,6 +43,7 @@ class PendingAction:
     status: str
     expires_at: datetime
     result: dict | None = None
+    confirmed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -175,6 +180,13 @@ class Storage:
         прежние ожидающие действия того же пользователя: подтвердить можно только последнее.
         """
         async with self._pool.acquire() as connection, connection.transaction():
+            # Сообщения одного пользователя обрабатываются параллельно: без блокировки два
+            # одновременных запроса оставили бы две действующие карточки.
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock($1, hashtext($2::bigint::text))",
+                _ACTION_LOCK_SPACE,
+                user_id,
+            )
             row = await connection.fetchrow(
                 "INSERT INTO pending_actions (id, user_id, chat_id, source_message_id, tool, "
                 "arguments, timezone, status, created_at, expires_at) "
@@ -208,15 +220,22 @@ class Storage:
     async def claim_action(
         self, action_id: uuid.UUID, *, user_id: int, chat_id: int, now: datetime
     ) -> PendingAction | None:
-        """Атомарно переводит своё действующее действие в «выполняется»; иначе None."""
+        """Атомарно переводит своё действие в «выполняется»; иначе None.
+
+        Можно: ожидающее подтверждения в течение срока; уже подтверждённое (повтор после
+        временного сбоя — в любое время); зависшее в «выполняется» дольше STALE_EXECUTION.
+        """
         row = await self._pool.fetchrow(
-            "UPDATE pending_actions SET status = 'executing', updated_at = now() "
-            "WHERE id = $1 AND user_id = $2 AND chat_id = $3 AND status = 'pending' "
-            "AND expires_at > $4 RETURNING *",
+            "UPDATE pending_actions SET status = 'executing', updated_at = $4, "
+            "confirmed_at = COALESCE(confirmed_at, $4) "
+            "WHERE id = $1 AND user_id = $2 AND chat_id = $3 AND ("
+            "(status = 'pending' AND (expires_at > $4 OR confirmed_at IS NOT NULL)) "
+            "OR (status = 'executing' AND updated_at < $5)) RETURNING *",
             action_id,
             user_id,
             chat_id,
             now,
+            now - STALE_EXECUTION,
         )
         return None if row is None else _action(row)
 
@@ -230,7 +249,7 @@ class Storage:
         status = await self._pool.fetchval(
             "UPDATE pending_actions SET status = 'expired', updated_at = now() "
             "WHERE id = $1 AND user_id = $2 AND status = 'pending' AND expires_at <= $3 "
-            "RETURNING status",
+            "AND confirmed_at IS NULL RETURNING status",
             action_id,
             user_id,
             now,
@@ -323,6 +342,7 @@ def _action(row: asyncpg.Record) -> PendingAction:
         status=row["status"],
         expires_at=row["expires_at"],
         result=None if result is None else json.loads(result),
+        confirmed_at=row["confirmed_at"],
     )
 
 

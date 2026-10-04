@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 from app.llm import LLMResponse, ToolCall
-from app.storage import AgentEvent, HistoryMessage, PendingAction, UserSettings
+from app.storage import STALE_EXECUTION, AgentEvent, HistoryMessage, PendingAction, UserSettings
 from mcp_server.errors import ToolFailure
 from mcp_server.reminders import StoredReminder
 from mcp_server.schedule import ScheduleFile, ScheduleSource
@@ -30,6 +30,7 @@ class FakeStorage:
         self.actions: dict[uuid.UUID, PendingAction] = {}
         self.action_sources: dict[tuple[int, int], uuid.UUID] = {}
         self.events: dict[int, list[AgentEvent]] = {}
+        self.updated_at: dict[uuid.UUID, datetime] = {}
 
     async def init_schema(self) -> None:
         pass
@@ -92,15 +93,19 @@ class FakeStorage:
 
     async def claim_action(self, action_id, *, user_id, chat_id, now) -> PendingAction | None:
         action = self.actions.get(action_id)
-        if (
-            action is None
-            or action.user_id != user_id
-            or action.chat_id != chat_id
-            or action.status != "pending"
-            or action.expires_at <= now
-        ):
+        if action is None or action.user_id != user_id or action.chat_id != chat_id:
             return None
-        self.actions[action_id] = replace(action, status="executing")
+        waiting = action.status == "pending" and (action.expires_at > now or action.confirmed_at)
+        stale = (
+            action.status == "executing"
+            and self.updated_at.get(action_id, now) < now - STALE_EXECUTION
+        )
+        if not (waiting or stale):
+            return None
+        self.actions[action_id] = replace(
+            action, status="executing", confirmed_at=action.confirmed_at or now
+        )
+        self.updated_at[action_id] = now
         return self.actions[action_id]
 
     async def get_action(self, action_id, *, user_id) -> PendingAction | None:
@@ -109,7 +114,12 @@ class FakeStorage:
 
     async def expire_action(self, action_id, *, user_id, now) -> bool:
         action = await self.get_action(action_id, user_id=user_id)
-        if action is None or action.status != "pending" or action.expires_at > now:
+        if (
+            action is None
+            or action.status != "pending"
+            or action.expires_at > now
+            or action.confirmed_at
+        ):
             return False
         self.actions[action_id] = replace(action, status="expired")
         return True

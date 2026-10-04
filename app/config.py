@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 from aiogram.utils.token import TokenValidationError, validate_token
 from dotenv import dotenv_values
 
+from app.timezones import normalize_timezone
+
 
 class ConfigError(ValueError):
     """Ошибка настройки без секретных значений в сообщении."""
@@ -39,8 +41,9 @@ class Settings:
     # ЛР2: агент и MCP-сервер.
     schedule_path: Path = Path("data/schedule.json")
     weather_timeout_seconds: float = 5.0
-    mcp_call_timeout_seconds: float = 20.0
+    mcp_call_timeout_seconds: float = 30.0
     agent_temperature: float = 0.2
+    default_timezone: str = "Europe/Moscow"
 
     @classmethod
     def load(
@@ -143,6 +146,10 @@ class Settings:
         if not model:
             raise ConfigError("LLM_MODEL: укажите имя модели у выбранного провайдера.")
 
+        default_zone = normalize_timezone(value("DEFAULT_TIMEZONE", "Europe/Moscow"))
+        if default_zone is None:
+            raise ConfigError("DEFAULT_TIMEZONE: укажите зону IANA, например Europe/Moscow.")
+
         def unit_interval(key: str, default: str) -> float:
             try:
                 result = float(value(key, default))
@@ -173,6 +180,7 @@ class Settings:
             llm_api_project=value("LLM_API_PROJECT").strip(),
             schedule_path=Path(value("SCHEDULE_PATH", "data/schedule.json")),
             weather_timeout_seconds=positive_float("WEATHER_TIMEOUT_SECONDS", "5"),
-            mcp_call_timeout_seconds=positive_float("MCP_CALL_TIMEOUT_SECONDS", "20"),
+            mcp_call_timeout_seconds=positive_float("MCP_CALL_TIMEOUT_SECONDS", "30"),
             agent_temperature=unit_interval("AGENT_TEMPERATURE", "0.2"),
+            default_timezone=default_zone,
         )

@@ -47,8 +47,9 @@ services:
       # ЛР2: MCP-сервер и агент. Путь к расписанию — внутри образа.
       SCHEDULE_PATH: ${SCHEDULE_PATH:-data/schedule.json}
       WEATHER_TIMEOUT_SECONDS: ${WEATHER_TIMEOUT_SECONDS:-5}
-      MCP_CALL_TIMEOUT_SECONDS: ${MCP_CALL_TIMEOUT_SECONDS:-20}
+      MCP_CALL_TIMEOUT_SECONDS: ${MCP_CALL_TIMEOUT_SECONDS:-30}
       AGENT_TEMPERATURE: ${AGENT_TEMPERATURE:-0.2}
+      DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-Europe/Moscow}
     depends_on:
       db:
         condition: service_healthy

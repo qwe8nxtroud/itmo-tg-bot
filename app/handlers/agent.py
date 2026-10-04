@@ -89,7 +89,7 @@ async def on_timezone(message: Message, command: CommandObject, agent: Agent) ->
 async def on_why(message: Message, agent: Agent) -> None:
     user_id = message.from_user.id
     event = await agent.last_event(user_id)
-    timezone = await agent.get_timezone(user_id)
+    timezone = await agent.get_timezone(user_id) or agent.default_timezone
     await message.answer(why_text(event, timezone), parse_mode=None)
 
 
@@ -115,14 +115,16 @@ async def on_action_button(
         return
     # Владелец и чат — из самого нажатия (доверенный update), а не из данных кнопки.
     user_id, chat_id = callback.from_user.id, callback.message.chat.id
+    # Telegram ждёт ответа на нажатие недолго, а MCP-вызов может занять секунды.
+    with contextlib.suppress(TelegramBadRequest):
+        await callback.answer()
     handle = agent.confirm if callback_data.decision == "ok" else agent.cancel
     try:
         reply = await handle(action_id, user_id=user_id, chat_id=chat_id, request_id=request_id)
     except Exception:
         logger.exception("Кнопка %s: не удалось обработать нажатие", request_id)
-        await callback.answer(BUTTON_ERROR_TEXT, show_alert=True)
+        await callback.message.answer(BUTTON_ERROR_TEXT, parse_mode=None)
         return
-    await callback.answer()
     if reply.action is None:
         # Действие завершено: кнопки убираются, чтобы не нажимать их снова.
         with contextlib.suppress(TelegramBadRequest):

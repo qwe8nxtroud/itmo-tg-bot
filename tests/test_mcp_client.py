@@ -6,7 +6,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from mcp import StdioServerParameters
+from mcp import MCPError, StdioServerParameters
+from mcp.types import CONNECTION_CLOSED
 
 from app.mcp_client import McpGateway, ToolCallError
 from mcp_server.errors import ToolFailure
@@ -102,14 +103,22 @@ async def test_server_that_does_not_start_leaves_bot_without_tools(gateway_for):
         await gateway.read_resource("schedule://current-week")
 
 
-async def test_broken_connection_reconnects(gateway_for):
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ConnectionResetError("сервер разорвал соединение"),
+        # Так SDK сообщает о смерти дочернего процесса сервера (stdio закрыт).
+        MCPError(CONNECTION_CLOSED, "Connection closed"),
+    ],
+)
+async def test_broken_connection_reconnects(gateway_for, failure):
     # Arrange
     server, _ = build_test_server()
     gateway = await gateway_for(server, reconnect_delay=0.05)
     client = gateway._client
 
     async def broken(*args, **kwargs):
-        raise ConnectionResetError("сервер разорвал соединение")
+        raise failure
 
     client.call_tool = broken  # type: ignore[method-assign]
     # Act
@@ -142,3 +151,20 @@ async def test_real_stdio_server_process(gateway_for):
             "add_reminder", {"text": "тест", "remind_at": "2030-01-01T10:00:00+03:00"}
         )
     assert error.value.code == "untrusted_context"
+
+
+async def test_sdk_schema_rejection_is_bad_result_without_reconnect(gateway_for):
+    # SDK сам проверяет structuredContent по outputSchema и бросает RuntimeError.
+    server, _ = build_test_server()
+    gateway = await gateway_for(server, reconnect_delay=0.05)
+    client = gateway._client
+
+    async def invalid(*args, **kwargs):
+        raise RuntimeError("Invalid structured content returned by tool get_schedule")
+
+    client.call_tool = invalid  # type: ignore[method-assign]
+    with pytest.raises(ToolCallError) as error:
+        await gateway.call_tool("get_schedule", {"date": "2026-10-12"})
+    assert error.value.code == "bad_result"
+    assert not error.value.retryable
+    assert gateway.available and gateway._client is client, "соединение не пересоздаётся"

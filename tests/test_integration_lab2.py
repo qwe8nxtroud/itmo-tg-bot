@@ -253,3 +253,58 @@ async def test_users_are_isolated_pg(pool):
     assert await storage.claim_action(action.id, user_id=ALICE, chat_id=ALICE, now=later) is None
     assert await storage.expire_action(action.id, user_id=ALICE, now=later) is True
     assert (await storage.get_action(action.id, user_id=ALICE)).status == "expired"
+
+
+async def test_one_pending_action_per_user_under_concurrency_pg(pool):
+    # Два разных сообщения одного пользователя обрабатываются одновременно.
+    await apply_migrations(pool)
+    storage = Storage(pool)
+    clock = Clock()
+
+    async def prepare(message_id: int):
+        return await storage.prepare_action(
+            user_id=ALICE,
+            chat_id=ALICE,
+            source_message_id=message_id,
+            tool="add_reminder",
+            arguments={"text": f"дело {message_id}", "remind_at": "2026-10-13T18:30:00+03:00"},
+            timezone="Europe/Moscow",
+            now=clock(),
+            ttl=timedelta(minutes=5),
+        )
+
+    await asyncio.gather(*(prepare(message_id) for message_id in range(1, 6)))
+    statuses = [row["status"] for row in await pool.fetch("SELECT status FROM pending_actions")]
+    assert sorted(statuses) == ["cancelled"] * 4 + ["pending"]
+
+
+async def test_confirmed_and_stale_actions_can_be_claimed_again_pg(pool):
+    # Arrange
+    await apply_migrations(pool)
+    storage = Storage(pool)
+    clock = Clock()
+    action, _ = await storage.prepare_action(
+        user_id=ALICE,
+        chat_id=ALICE,
+        source_message_id=1,
+        tool="add_reminder",
+        arguments={"text": "отчёт", "remind_at": "2026-10-13T18:30:00+03:00"},
+        timezone="Europe/Moscow",
+        now=clock(),
+        ttl=timedelta(minutes=5),
+    )
+    claimed = await storage.claim_action(action.id, user_id=ALICE, chat_id=ALICE, now=clock())
+    assert claimed.confirmed_at == clock()
+    # Act / Assert: свежее «выполняется» второй раз не захватывается
+    assert await storage.claim_action(action.id, user_id=ALICE, chat_id=ALICE, now=clock()) is None
+    # Act / Assert: после временного сбоя и истечения 5 минут подтверждённое можно повторить
+    await storage.finish_action(action.id, status="pending")
+    later = clock() + timedelta(minutes=10)
+    assert await storage.expire_action(action.id, user_id=ALICE, now=later) is False
+    again = await storage.claim_action(action.id, user_id=ALICE, chat_id=ALICE, now=later)
+    assert again is not None and again.status == "executing"
+    # Act / Assert: зависшее «выполняется» старше минуты захватывается снова
+    stale = await storage.claim_action(
+        action.id, user_id=ALICE, chat_id=ALICE, now=later + timedelta(seconds=61)
+    )
+    assert stale is not None

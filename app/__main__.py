@@ -78,6 +78,7 @@ async def run(settings: Settings) -> None:
             temperature=settings.agent_temperature,
             history_max_messages=settings.history_max_messages,
             history_max_chars=settings.history_max_chars,
+            default_timezone=settings.default_timezone,
         )
         async with asyncio.timeout(30):
             await bot.set_my_commands(BOT_COMMANDS)

@@ -5,6 +5,7 @@
 кнопкой. Владелец, чат и id сообщения берутся только из Telegram update.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -119,6 +120,7 @@ class Agent:
         max_tool_calls: int = 2,
         confirmation_ttl: timedelta = timedelta(minutes=5),
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        default_timezone: str = "Europe/Moscow",
     ) -> None:
         self._assistant = assistant
         self._storage = storage
@@ -130,6 +132,9 @@ class Agent:
         self._max_tool_calls = max_tool_calls
         self._ttl = confirmation_ttl
         self._clock = clock
+        # Зона для дат («сегодня», «завтра»), пока пользователь не задал свою. Для
+        # напоминаний её недостаточно: там нужна зона, явно сохранённая пользователем.
+        self.default_timezone = default_timezone
 
     # --- Сообщение пользователя -----------------------------------------------------
 
@@ -155,7 +160,7 @@ class Agent:
 
     async def _run(self, request: AgentRequest, timezone: str | None, trace: _Trace) -> AgentReply:
         now = self._clock()
-        local_now = now.astimezone(zone(timezone or "UTC"))
+        local_now = now.astimezone(zone(timezone or self.default_timezone))
         tools = dict(self.gateway.tools)
         history = await self._storage.get_history(request.chat_id, limit=self._history_max_messages)
         messages: list[dict] = build_messages(
@@ -191,7 +196,8 @@ class Agent:
             if call.name == CLARIFY:
                 return self._clarify(call.arguments, trace)
             spec = tools.get(call.name)
-            trace.tools.append(call.name)
+            # Имя неизвестного инструмента — текст модели: в аудит и журнал его не пишем.
+            trace.tools.append(call.name if spec is not None else "неизвестный инструмент")
             trace.reason = trace.reason or _reason(response, spec)
             if spec is None:
                 trace.action, trace.validation = "rejected", "не пройдена: неизвестный инструмент"
@@ -286,8 +292,9 @@ class Agent:
             zone_line = f"Часовой пояс пользователя: {timezone} ({format_offset(local_now)})."
         else:
             zone_line = (
-                "Часовой пояс пользователя не задан (время ниже — UTC). Для напоминаний его "
-                "нужно задать командой /timezone."
+                f"Часовой пояс пользователя не задан: даты считаются по {self.default_timezone} "
+                f"({format_offset(local_now)}). Для напоминаний его нужно задать командой "
+                "/timezone."
             )
         available = ", ".join(self.gateway.tools) if self.gateway.available else ""
         tools_line = (
@@ -362,19 +369,26 @@ class Agent:
         )
         trace.tool_calls = 1
         try:
-            result = await self.gateway.call_tool(
-                action.tool, action.arguments, meta={trust.META_KEY: token}
-            )
-        except ToolCallError as exc:
-            trace.action, trace.execution = "error", f"ошибка ({exc.code})"
-            if exc.retryable and now < action.expires_at:
-                await self._storage.finish_action(action.id, status="pending")
-                return AgentReply(RETRY_TEXT.format(message=exc.message), action)
-            await self._storage.finish_action(
-                action.id, status="failed", result={"error": exc.code, "message": exc.message}
-            )
-            return AgentReply(FAILED_TEXT.format(message=exc.message))
-        await self._storage.finish_action(action.id, status="done", result=result)
+            try:
+                result = await self.gateway.call_tool(
+                    action.tool, action.arguments, meta={trust.META_KEY: token}
+                )
+            except ToolCallError as exc:
+                trace.action, trace.execution = "error", f"ошибка ({exc.code})"
+                if exc.retryable:
+                    # Подтверждённое действие можно повторить и после 5 минут: сервер
+                    # идемпотентен по id, поэтому повтор не создаст второе напоминание.
+                    await self._storage.finish_action(action.id, status="pending")
+                    return AgentReply(RETRY_TEXT.format(message=exc.message), action)
+                await self._storage.finish_action(
+                    action.id, status="failed", result={"error": exc.code, "message": exc.message}
+                )
+                return AgentReply(FAILED_TEXT.format(message=exc.message))
+            await self._storage.finish_action(action.id, status="done", result=result)
+        except BaseException:
+            # Неожиданный сбой или отмена задачи: действие не должно застрять в «выполняется».
+            await asyncio.shield(self._storage.finish_action(action.id, status="pending"))
+            raise
         trace.execution = "успешно" if result.get("created", True) else "повтор: запись уже была"
         return AgentReply(reminder_created_text(result))
 
@@ -398,7 +412,7 @@ class Agent:
         if action.status == "executing":
             trace.validation = "не пройдена (уже выполняется)"
             return IN_PROGRESS_TEXT
-        if action.status == "pending" and action.expires_at <= now:
+        if action.status == "pending" and action.expires_at <= now and not action.confirmed_at:
             await self._storage.expire_action(action_id, user_id=user_id, now=now)
             trace.validation = "не пройдена (просрочено)"
             return EXPIRED_TEXT

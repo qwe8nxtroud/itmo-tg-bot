@@ -22,6 +22,9 @@ CREATE TABLE pending_actions (
         status IN ('pending', 'executing', 'done', 'cancelled', 'expired', 'failed')
     ),
     result            JSONB,
+    -- Момент первого подтверждения: подтверждённое действие можно повторить после сбоя
+    -- и после истечения 5 минут (на сервере оно идемпотентно по id).
+    confirmed_at      TIMESTAMPTZ,
     created_at        TIMESTAMPTZ NOT NULL,
     expires_at        TIMESTAMPTZ NOT NULL,
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),

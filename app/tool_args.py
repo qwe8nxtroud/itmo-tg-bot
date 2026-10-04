@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 import jsonschema
 
 from app.mcp_client import ToolSpec
-from app.timezones import TIMEZONE_HINT, LocalTimeError, format_local, localize
+from app.timezones import TIMEZONE_HINT, LocalTimeError, format_local, localize, zone
 
 MAX_SCHEDULE_DAYS = 400
 MAX_REMINDER_AHEAD = timedelta(days=366)
@@ -109,7 +109,10 @@ def _reminder(arguments: dict, timezone: str | None, now: datetime) -> dict:
         local = localize(moment.replace(tzinfo=None), timezone)
     except LocalTimeError as exc:
         raise ArgumentError(exc.code, exc.message) from None
-    if local.utcoffset() != moment.utcoffset():
+    # Модель знает только текущее смещение, а на дату после перехода на летнее или
+    # зимнее время действует другое: допустимы оба, время всё равно берётся по зоне.
+    allowed = {local.utcoffset(), now.astimezone(zone(timezone)).utcoffset()}
+    if moment.utcoffset() not in allowed:
         raise ArgumentError(
             "timezone_mismatch",
             f"Время указано не в вашем часовом поясе ({timezone}). Уточните время.",
