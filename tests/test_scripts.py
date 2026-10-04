@@ -289,6 +289,33 @@ def test_deploy_archive_never_contains_env_or_keys(tmp_path):
     assert all(".env" not in n and "id_ed25519" not in n for n in names)
 
 
+def test_deploy_archive_contains_lab2_server_migrations_and_schedule(tmp_path):
+    # Arrange
+    import tarfile
+
+    from scripts.cloud import source_archive
+
+    for path, content in {
+        "app/__init__.py": "",
+        "app/migrations/001_lab1.sql": "SELECT 1;",
+        "mcp_server/__main__.py": "",
+        "data/schedule.json": "{}",
+        "data/.env": "SECRET=yes",
+    }.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(content, encoding="utf-8")
+    # Act
+    with tarfile.open(source_archive(tmp_path)) as archive:
+        names = set(archive.getnames())
+    # Assert
+    assert {
+        "app/migrations/001_lab1.sql",
+        "mcp_server/__main__.py",
+        "data/schedule.json",
+    } <= names
+    assert "data/.env" not in names
+
+
 def test_missing_cloud_key_is_not_replaced(tmp_path):
     # Arrange
     deployment = cloud(tmp_path, FakeYC())
