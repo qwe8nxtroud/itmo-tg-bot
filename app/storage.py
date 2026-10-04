@@ -1,25 +1,17 @@
-"""Хранение настроек пользователей и истории диалогов в PostgreSQL."""
+"""Хранение настроек, истории диалогов, действий агента и аудита в PostgreSQL."""
 
+import json
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
 
 import asyncpg
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS user_settings (
-    chat_id     BIGINT PRIMARY KEY,
-    mode        TEXT NOT NULL,
-    temperature DOUBLE PRECISION NOT NULL,
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS dialog_messages (
-    id         BIGSERIAL PRIMARY KEY,
-    chat_id    BIGINT NOT NULL,
-    role       TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
-    content    TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS dialog_messages_chat_id_id_idx ON dialog_messages (chat_id, id);
-"""
+MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+# Произвольная константа: блокировка не даёт двум экземплярам применять миграции одновременно.
+_MIGRATION_LOCK = 724_001
+EVENTS_PER_USER = 50
 
 
 @dataclass(frozen=True)
@@ -34,15 +26,73 @@ class HistoryMessage:
     content: str
 
 
+@dataclass(frozen=True)
+class PendingAction:
+    """Подготовленное действие с побочным эффектом и его состояние подтверждения."""
+
+    id: uuid.UUID
+    user_id: int
+    chat_id: int
+    tool: str
+    arguments: dict
+    timezone: str
+    status: str
+    expires_at: datetime
+    result: dict | None = None
+
+
+@dataclass(frozen=True)
+class AgentEvent:
+    """Запись аудита: что агент решил и чем закончилось, без текста сообщения."""
+
+    request_id: str
+    kind: str
+    action: str
+    validation: str
+    execution: str
+    duration_ms: int
+    created_at: datetime
+    tools: str | None = None
+    args_summary: str | None = None
+    reason: str | None = None
+    tool_calls: int = 0
+
+
+async def apply_migrations(pool: asyncpg.Pool) -> list[str]:
+    """Применяет недостающие миграции по порядку номера; возвращает применённые сейчас."""
+    applied_now: list[str] = []
+    async with pool.acquire() as connection, connection.transaction():
+        await connection.execute("SELECT pg_advisory_xact_lock($1)", _MIGRATION_LOCK)
+        await connection.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations ("
+            "version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+        )
+        done = {
+            row["version"]
+            for row in await connection.fetch("SELECT version FROM schema_migrations")
+        }
+        for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+            if path.stem in done:
+                continue
+            await connection.execute(path.read_text(encoding="utf-8"))
+            await connection.execute(
+                "INSERT INTO schema_migrations (version) VALUES ($1)", path.stem
+            )
+            applied_now.append(path.stem)
+    return applied_now
+
+
 class Storage:
-    """Все SQL-запросы приложения; данные разделены по идентификатору личного чата."""
+    """Все SQL-запросы приложения; данные разделены по чату и пользователю Telegram."""
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
     async def init_schema(self) -> None:
-        # Повторный запуск безопасен: таблицы создаются только при отсутствии.
-        await self._pool.execute(SCHEMA)
+        # Повторный запуск безопасен: применяются только новые миграции.
+        await apply_migrations(self._pool)
+
+    # --- ЛР1: настройки и история -------------------------------------------------
 
     async def get_settings(self, chat_id: int) -> UserSettings | None:
         row = await self._pool.fetchrow(
@@ -89,6 +139,191 @@ class Storage:
 
     async def clear_history(self, chat_id: int) -> None:
         await self._pool.execute("DELETE FROM dialog_messages WHERE chat_id = $1", chat_id)
+
+    # --- ЛР2: часовой пояс ----------------------------------------------------------
+
+    async def get_timezone(self, user_id: int) -> str | None:
+        return await self._pool.fetchval(
+            "SELECT timezone FROM user_profiles WHERE user_id = $1", user_id
+        )
+
+    async def set_timezone(self, user_id: int, timezone: str) -> None:
+        await self._pool.execute(
+            "INSERT INTO user_profiles (user_id, timezone) VALUES ($1, $2) "
+            "ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone, updated_at = now()",
+            user_id,
+            timezone,
+        )
+
+    # --- ЛР2: подтверждаемые действия -----------------------------------------------
+
+    async def prepare_action(
+        self,
+        *,
+        user_id: int,
+        chat_id: int,
+        source_message_id: int,
+        tool: str,
+        arguments: dict,
+        timezone: str,
+        now: datetime,
+        ttl: timedelta,
+    ) -> tuple[PendingAction, bool]:
+        """Создаёт действие для сообщения или возвращает уже созданное (повтор update).
+
+        Второй элемент — True, если действие создано сейчас. Новое действие отменяет
+        прежние ожидающие действия того же пользователя: подтвердить можно только последнее.
+        """
+        async with self._pool.acquire() as connection, connection.transaction():
+            row = await connection.fetchrow(
+                "INSERT INTO pending_actions (id, user_id, chat_id, source_message_id, tool, "
+                "arguments, timezone, status, created_at, expires_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'pending', $8, $9) "
+                "ON CONFLICT (chat_id, source_message_id) DO NOTHING RETURNING *",
+                uuid.uuid4(),
+                user_id,
+                chat_id,
+                source_message_id,
+                tool,
+                json.dumps(arguments, ensure_ascii=False),
+                timezone,
+                now,
+                now + ttl,
+            )
+            if row is None:
+                row = await connection.fetchrow(
+                    "SELECT * FROM pending_actions WHERE chat_id = $1 AND source_message_id = $2",
+                    chat_id,
+                    source_message_id,
+                )
+                return _action(row), False
+            await connection.execute(
+                "UPDATE pending_actions SET status = 'cancelled', updated_at = now() "
+                "WHERE user_id = $1 AND status = 'pending' AND id <> $2",
+                user_id,
+                row["id"],
+            )
+            return _action(row), True
+
+    async def claim_action(
+        self, action_id: uuid.UUID, *, user_id: int, chat_id: int, now: datetime
+    ) -> PendingAction | None:
+        """Атомарно переводит своё действующее действие в «выполняется»; иначе None."""
+        row = await self._pool.fetchrow(
+            "UPDATE pending_actions SET status = 'executing', updated_at = now() "
+            "WHERE id = $1 AND user_id = $2 AND chat_id = $3 AND status = 'pending' "
+            "AND expires_at > $4 RETURNING *",
+            action_id,
+            user_id,
+            chat_id,
+            now,
+        )
+        return None if row is None else _action(row)
+
+    async def get_action(self, action_id: uuid.UUID, *, user_id: int) -> PendingAction | None:
+        row = await self._pool.fetchrow(
+            "SELECT * FROM pending_actions WHERE id = $1 AND user_id = $2", action_id, user_id
+        )
+        return None if row is None else _action(row)
+
+    async def expire_action(self, action_id: uuid.UUID, *, user_id: int, now: datetime) -> bool:
+        status = await self._pool.fetchval(
+            "UPDATE pending_actions SET status = 'expired', updated_at = now() "
+            "WHERE id = $1 AND user_id = $2 AND status = 'pending' AND expires_at <= $3 "
+            "RETURNING status",
+            action_id,
+            user_id,
+            now,
+        )
+        return status is not None
+
+    async def cancel_action(self, action_id: uuid.UUID, *, user_id: int, chat_id: int) -> bool:
+        status = await self._pool.fetchval(
+            "UPDATE pending_actions SET status = 'cancelled', updated_at = now() "
+            "WHERE id = $1 AND user_id = $2 AND chat_id = $3 AND status = 'pending' "
+            "RETURNING status",
+            action_id,
+            user_id,
+            chat_id,
+        )
+        return status is not None
+
+    async def finish_action(
+        self, action_id: uuid.UUID, *, status: str, result: dict | None = None
+    ) -> None:
+        """Завершает выполняемое действие: done/failed — окончательно, pending — для повтора."""
+        await self._pool.execute(
+            "UPDATE pending_actions SET status = $2, result = $3::jsonb, updated_at = now() "
+            "WHERE id = $1 AND status = 'executing'",
+            action_id,
+            status,
+            None if result is None else json.dumps(result, ensure_ascii=False),
+        )
+
+    # --- ЛР2: аудит ------------------------------------------------------------------
+
+    async def add_event(self, user_id: int, event: AgentEvent) -> None:
+        async with self._pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "INSERT INTO agent_events (user_id, request_id, kind, action, tools, "
+                "args_summary, validation, execution, reason, tool_calls, duration_ms, "
+                "created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                user_id,
+                event.request_id,
+                event.kind,
+                event.action,
+                event.tools,
+                event.args_summary,
+                event.validation,
+                event.execution,
+                event.reason,
+                event.tool_calls,
+                event.duration_ms,
+                event.created_at,
+            )
+            await connection.execute(
+                "DELETE FROM agent_events WHERE user_id = $1 AND id NOT IN "
+                "(SELECT id FROM agent_events WHERE user_id = $1 ORDER BY id DESC LIMIT $2)",
+                user_id,
+                EVENTS_PER_USER,
+            )
+
+    async def last_message_event(self, user_id: int) -> AgentEvent | None:
+        row = await self._pool.fetchrow(
+            "SELECT * FROM agent_events WHERE user_id = $1 AND kind = 'message' "
+            "ORDER BY id DESC LIMIT 1",
+            user_id,
+        )
+        if row is None:
+            return None
+        return AgentEvent(
+            request_id=row["request_id"],
+            kind=row["kind"],
+            action=row["action"],
+            validation=row["validation"],
+            execution=row["execution"],
+            duration_ms=row["duration_ms"],
+            created_at=row["created_at"],
+            tools=row["tools"],
+            args_summary=row["args_summary"],
+            reason=row["reason"],
+            tool_calls=row["tool_calls"],
+        )
+
+
+def _action(row: asyncpg.Record) -> PendingAction:
+    result = row["result"]
+    return PendingAction(
+        id=row["id"],
+        user_id=row["user_id"],
+        chat_id=row["chat_id"],
+        tool=row["tool"],
+        arguments=json.loads(row["arguments"]),
+        timezone=row["timezone"],
+        status=row["status"],
+        expires_at=row["expires_at"],
+        result=None if result is None else json.loads(result),
+    )
 
 
 _UPSERT_SETTINGS = (
