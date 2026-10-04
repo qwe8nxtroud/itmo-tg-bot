@@ -89,6 +89,18 @@ async def test_request_body_headers_and_parsed_response(session, api):
     assert (response.prompt_tokens, response.completion_tokens) == (12, 3)
 
 
+async def test_project_header_only_when_configured(session, api):
+    # Arrange / Act: Yandex AI Studio принимает каталог заголовком OpenAI-Project.
+    await client(session, api, project="b1gexamplefolder").complete(
+        [{"role": "user", "content": "x"}], temperature=0.0
+    )
+    await client(session, api).complete([{"role": "user", "content": "x"}], temperature=0.0)
+    # Assert
+    with_project, without_project = (request for request, _ in api.requests)
+    assert with_project.headers["OpenAI-Project"] == "b1gexamplefolder"
+    assert "OpenAI-Project" not in without_project.headers
+
+
 async def test_trailing_slash_in_base_url_and_zero_max_tokens(session, api):
     # Act
     await client(session, api, base_url=api.base_url + "/", max_tokens=0).complete(
