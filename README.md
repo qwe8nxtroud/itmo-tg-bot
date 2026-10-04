@@ -382,3 +382,15 @@ RUN_INTEGRATION=1 python -m pytest -m integration -v
 
 `python -m pytest -q` выполняется без Telegram, LLM и PostgreSQL: обработчики проверяются через `Dispatcher.feed_update` с подменённой сессией бота, модель и хранилище — тестовыми реализациями, клиент API — против локального HTTP-сервера. Работа с настоящим PostgreSQL проверяется интеграционным тестом (`RUN_INTEGRATION=1`, требует Docker).
 
+### Эксперимент лабораторной
+
+`python -m scripts.experiment_lab1` выполняет эксперимент с действительной моделью из `.env`. Режим `/study`, один запрос, по 3 независимых запуска при `temperature` 0.0, 0.3, 0.7 и 1.0; перед каждым запуском история пустая, как после `/reset`. Отдельно сравниваются неполная и улучшенная (R.C.T.F.) инструкции. Признаки формата заданы до запуска: блок кода, не длиннее 200 слов, названа типичная ошибка, ответ на русском. Таблицы — в [docs/experiments/lab1-temperature.md](docs/experiments/lab1-temperature.md), все ответы — в JSON рядом, анализ — в [отчёте](docs/reports/lab1-report.md).
+
+### Провайдер: Yandex AI Studio
+
+```dotenv
+LLM_API_BASE_URL=https://llm.api.cloud.yandex.net/v1
+LLM_API_KEY=<API-ключ сервисного аккаунта с ролью ai.languageModels.user>
+LLM_MODEL=gpt://<folder_id>/yandexgpt/latest
+LLM_API_PROJECT=<folder_id>
+```
