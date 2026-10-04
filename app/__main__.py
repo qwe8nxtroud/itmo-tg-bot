@@ -55,6 +55,7 @@ async def run(settings: Settings) -> None:
                 model=settings.llm_model,
                 timeout=settings.llm_timeout_seconds,
                 max_tokens=settings.llm_max_tokens,
+                project=settings.llm_api_project,
             ),
             history_max_messages=settings.history_max_messages,
             history_max_chars=settings.history_max_chars,

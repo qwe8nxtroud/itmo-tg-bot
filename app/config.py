@@ -32,6 +32,7 @@ class Settings:
     llm_proxy_url: str = field(default="", repr=False)
     llm_timeout_seconds: float = 60.0
     llm_max_tokens: int = 1024
+    llm_api_project: str = ""
     # Ограничения истории диалога, передаваемой модели.
     history_max_messages: int = 20
     history_max_chars: int = 12000
@@ -153,6 +154,7 @@ class Settings:
             llm_proxy_url=proxy_url("LLM_PROXY_URL"),
             llm_timeout_seconds=positive_float("LLM_TIMEOUT_SECONDS", "60"),
             llm_max_tokens=non_negative_int("LLM_MAX_TOKENS", "1024"),
+            llm_api_project=value("LLM_API_PROJECT").strip(),
             history_max_messages=positive_int("HISTORY_MAX_MESSAGES", "20"),
             history_max_chars=positive_int("HISTORY_MAX_CHARS", "12000"),
         )

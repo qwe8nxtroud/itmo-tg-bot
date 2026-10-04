@@ -43,6 +43,7 @@ services:
       LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-1024}
       HISTORY_MAX_MESSAGES: ${HISTORY_MAX_MESSAGES:-20}
       HISTORY_MAX_CHARS: ${HISTORY_MAX_CHARS:-12000}
+      LLM_API_PROJECT: ${LLM_API_PROJECT:-}
     depends_on:
       db:
         condition: service_healthy

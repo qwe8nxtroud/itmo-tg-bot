@@ -46,10 +46,14 @@ class LLMClient:
         model: str,
         timeout: float,
         max_tokens: int = 0,
+        project: str = "",
     ) -> None:
         self._session = session
         self._url = base_url.rstrip("/") + "/chat/completions"
         self._headers = {"Authorization": f"Bearer {api_key}"}
+        if project:
+            # Yandex AI Studio: каталог (folder_id), в котором выпущен ключ сервисного аккаунта.
+            self._headers["OpenAI-Project"] = project
         self.model = model
         self._timeout = timeout
         self._max_tokens = max_tokens
