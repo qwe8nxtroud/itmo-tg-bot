@@ -435,8 +435,9 @@ flowchart LR
 2. Выбор делается нативным механизмом `tools` Chat Completions. Ответ модели — текст, уточнение или вызов инструмента.
 3. Приложение сверяет имя со списком обнаруженных инструментов и проверяет аргументы (`app/tool_args.py`): JSON-схема сервера, лишние поля, календарь и диапазон даты. Для напоминания дополнительно проверяются явное смещение, совпадающее с зоной пользователя, будущее время и неоднозначное или несуществующее время при переходе на летнее время.
 4. Инструменты чтения вызываются через MCP. Результат возвращается модели сообщением `role: tool` с пометкой источника. Строки, похожие на инструкцию для модели, скрываются, и действие с побочным эффектом в этом сообщении блокируется.
-5. На одно сообщение — не больше 2 MCP-вызовов (`max_tool_calls`). При превышении обработка останавливается, событие `limit_exceeded` пишется в аудит.
-6. `add_reminder` из цикла не вызывается: готовится действие в `pending_actions`, пользователь видит карточку с кнопками «Подтвердить»/«Отменить».
+5. Перед отправкой ответ модели проверяется на дословные фрагменты системной инструкции; при утечке ответ заменяется отказом. В контексте модели есть календарь на 7 дней, чтобы она не вычисляла дни недели сама.
+6. На одно сообщение — не больше 2 MCP-вызовов (`max_tool_calls`). При превышении обработка останавливается, событие `limit_exceeded` пишется в аудит.
+7. `add_reminder` из цикла не вызывается: готовится действие в `pending_actions`, пользователь видит карточку с кнопками «Подтвердить»/«Отменить».
 
 `temperature` в режиме агента берётся из `AGENT_TEMPERATURE` (по умолчанию 0.2), чтобы выбор инструмента был воспроизводимым. `/settings` влияет на режимы ЛР № 1.
 
@@ -499,10 +500,12 @@ TEST_POSTGRES_DSN=postgresql://user:pass@127.0.0.1:5432/postgres \
 
 ```bash
 .venv/bin/python -m scripts.eval_routing --label v1
-.venv/bin/python -m scripts.eval_routing --label v2 --only weather_3,clarify_1   # повтор после изменения
+.venv/bin/python -m scripts.eval_routing --label extra-v1 --dataset docs/evaluation/lab2-extra.json
+.venv/bin/python -m scripts.eval_routing --label extra-v2-failed --dataset docs/evaluation/lab2-extra.json \
+  --only extra_schedule_friday                                                   # повтор после изменения
 ```
 
-Набор [docs/evaluation/lab2-routing.json](docs/evaluation/lab2-routing.json) прогоняется через настоящий `Agent` и настоящую модель. Схемы обнаруживаются у настоящего MCP-сервера, время и зона фиксируются из набора. Инструменты не выполняются, напоминания только готовятся. Таблицы и метрики `routing_accuracy`, `argument_accuracy` сохраняются в [docs/evaluation/results/](docs/evaluation/results/).
+Базовый набор [docs/evaluation/lab2-routing.json](docs/evaluation/lab2-routing.json) и собственные примеры [docs/evaluation/lab2-extra.json](docs/evaluation/lab2-extra.json) (`--dataset`) прогоняются через настоящий `Agent` и настоящую модель. Негативные сценарии на настоящей модели — `python -m scripts.negative_live`. Схемы обнаруживаются у настоящего MCP-сервера, время и зона фиксируются из набора. Инструменты не выполняются, напоминания только готовятся. Таблицы и метрики `routing_accuracy`, `argument_accuracy` сохраняются в [docs/evaluation/results/](docs/evaluation/results/).
 
 ### Провайдер: Yandex AI Studio
 

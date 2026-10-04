@@ -1,0 +1,33 @@
+{
+  "meta": {
+    "label": "extra-v2-failed",
+    "model": "yandexgpt/latest",
+    "temperature": 0.2,
+    "run_at": "2026-10-05 00:30 MSK",
+    "now": "2026-10-12T09:00:00+03:00",
+    "timezone": "Europe/Moscow"
+  },
+  "rows": [
+    {
+      "id": "extra_schedule_friday",
+      "query": "Что у меня в пятницу?",
+      "expected_action": "get_schedule",
+      "expected_arguments": {
+        "date": "2026-10-16"
+      },
+      "actual_action": "get_schedule",
+      "actual_arguments": {
+        "date": "2026-10-16"
+      },
+      "model_tool_call": {
+        "name": "get_schedule",
+        "arguments": "{\"date\":\"2026-10-16\"}"
+      },
+      "validation": "пройдена",
+      "answer": "Не получилось получить данные: оценка: вызов записан",
+      "error": null,
+      "action_ok": true,
+      "arguments_ok": true
+    }
+  ]
+}

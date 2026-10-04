@@ -166,6 +166,7 @@ def render(meta: dict, rows: list[dict]) -> str:
             f"| {'✅' if ok else '❌'} |"
         )
     tool_rows = [r for r in rows if r["arguments_ok"] is not None]
+    # Знаменатель argument_accuracy — запросы, которым по ожиданию нужен инструмент.
     routing = sum(r["action_ok"] for r in rows)
     arguments = sum(bool(r["arguments_ok"]) for r in tool_rows)
     lines += [
@@ -185,8 +186,7 @@ def render(meta: dict, rows: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-async def main_async(args) -> int:
-    dataset = json.loads(DATASET.read_text(encoding="utf-8"))
+async def main_async(args, dataset: dict) -> int:
     context = dataset["evaluation_context"]
     cases = dataset["cases"]
     if args.only:
@@ -257,7 +257,12 @@ def main() -> int:
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--label", default="v1", help="имя версии результата")
     parser.add_argument("--only", help="id запросов через запятую")
-    return asyncio.run(main_async(parser.parse_args()))
+    parser.add_argument(
+        "--dataset", default=str(DATASET), help="набор запросов (по умолчанию базовый)"
+    )
+    args = parser.parse_args()
+    dataset = json.loads(Path(args.dataset).read_text(encoding="utf-8"))
+    return asyncio.run(main_async(args, dataset))
 
 
 if __name__ == "__main__":
