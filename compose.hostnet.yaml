@@ -1,0 +1,16 @@
+# Дополнение к compose.yaml для серверов, где из контейнера нет нормального выхода к
+# Telegram (из российских сетей IPv4 к api.telegram.org режется, а IPv6-NAT Docker может
+# работать нестабильно). Бот работает в сети хоста — с его DNS, /etc/hosts и маршрутами;
+# база публикуется только на 127.0.0.1. Порты не должны быть заняты на хосте.
+#   COMPOSE_EXTRA=compose.hostnet.yaml bash scripts/deploy_server.sh <ssh-хост>
+services:
+  db:
+    ports:
+      - "127.0.0.1:${HOST_DB_PORT:-55433}:5432"
+
+  bot:
+    network_mode: host
+    environment:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: ${HOST_DB_PORT:-55433}
+      HEALTH_PORT: ${HOST_HEALTH_PORT:-18081}

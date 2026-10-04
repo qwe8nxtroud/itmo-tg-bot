@@ -5,8 +5,8 @@
 #   bash scripts/deploy_server.sh <ssh-хост> [каталог] status   # состояние контейнеров
 #   bash scripts/deploy_server.sh <ssh-хост> [каталог] logs     # последние строки журнала бота
 #
-# COMPOSE_EXTRA=compose.ipv6.yaml — дополнительный файл compose (например, если Telegram на
-# сервере доступен только по IPv6). Выбор запоминается на сервере для status и logs.
+# COMPOSE_EXTRA=compose.hostnet.yaml — дополнительный файл compose (например, если из
+# контейнера нет выхода к Telegram). Выбор запоминается на сервере для status и logs.
 #
 # Отправляется зафиксированное состояние (git archive HEAD): без .env, .venv и локальных
 # правок. Конфигурация берётся из локального .env и передаётся через stdin SSH сразу с
@@ -30,7 +30,7 @@ esac
 
 cd "$root"
 [ -f .env ] || { echo "Нет файла .env: заполните его по .env.example" >&2; exit 1; }
-if [ -n "$(git status --porcelain -- app mcp_server data Dockerfile .dockerignore compose.yaml compose.ipv6.yaml requirements.txt constraints.txt)" ]; then
+if [ -n "$(git status --porcelain -- app mcp_server data Dockerfile .dockerignore compose.yaml compose.hostnet.yaml requirements.txt constraints.txt)" ]; then
   echo "Есть незакоммиченные изменения в коде: на сервер уходит только HEAD. Сделайте коммит." >&2
   exit 1
 fi
@@ -42,7 +42,7 @@ revision="$(git rev-parse --short HEAD)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 git archive --format=tar.gz -o "$tmp/source.tar.gz" HEAD \
-  Dockerfile .dockerignore requirements.txt constraints.txt compose.yaml compose.ipv6.yaml \
+  Dockerfile .dockerignore requirements.txt constraints.txt compose.yaml compose.hostnet.yaml \
   app mcp_server data
 # Внутри compose бот ходит в БД по имени сервиса; остальные значения — из .env.
 grep -v -E '^(POSTGRES_HOST|POSTGRES_PORT)=' .env > "$tmp/env.server"
