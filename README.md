@@ -6,7 +6,7 @@
 - **ЛР № 2** — режим `/agent` (по умолчанию): агент с собственным MCP-сервером (погода, расписание, напоминания с подтверждением), команды `/tools`, `/timezone`, `/why`, `/week`: раздел [12](#12-лабораторная-работа--2-агент-с-mcp-инструментами).
 - **Деплой на свой сервер по SSH** — раздел [13](#13-деплой-на-свой-сервер-по-ssh).
 
-Правила проекта — [AGENTS.md](AGENTS.md), спецификация агента — [docs/spec.md](docs/spec.md), план и соответствие тестам — [docs/plan.md](docs/plan.md), отчёты — [docs/reports/](docs/reports/).
+**Документация:** [docs/README.md](docs/README.md) — как всё устроено ([архитектура](docs/architecture.md)), [контракты MCP](docs/mcp-contracts.md), [настройки](docs/configuration.md), [эксплуатация и деплой](docs/operations.md), [разработка](docs/development.md). Правила проекта — [AGENTS.md](AGENTS.md), спецификация агента — [docs/spec.md](docs/spec.md), план — [docs/plan.md](docs/plan.md), отчёты — [docs/reports/](docs/reports/).
 
 **Локально:** Python работает на вашем компьютере, PostgreSQL — в Docker. **В Yandex Cloud:** оба компонента работают в Docker на одной ВМ. Доступ бота к Telegram из облака проходит через внешний HTTP/SOCKS5-прокси.
 

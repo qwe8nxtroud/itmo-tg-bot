@@ -14,7 +14,7 @@ Python 3.12, aiogram 3, asyncpg + PostgreSQL, MCP Python SDK 2.x.
 | `data/schedule.json` | Обезличенное учебное расписание (без персональных данных) |
 | `scripts/` | Локальный запуск, деплой, независимая проверка MCP, эксперименты |
 | `tests/` | Автотесты: офлайн по умолчанию, `-m integration` — на PostgreSQL |
-| `docs/` | Методичка, спецификация, план, эксперименты, отчёты |
+| `docs/` | Документация (`docs/README.md`: архитектура, контракты MCP, настройки, эксплуатация, разработка), методичка, спецификация, план, эксперименты, отчёты |
 
 ## Команды
 
@@ -26,7 +26,8 @@ RUN_INTEGRATION=1 .venv/bin/python -m pytest -m integration -v   # нужен Po
 .venv/bin/python -m pip check                      # или uv pip check -p .venv/bin/python
 .venv/bin/python -m scripts.mcp_check              # независимый MCP-клиент
 .venv/bin/python -m scripts.eval_routing           # оценка маршрутизации (нужен LLM)
-bash scripts/deploy_server.sh vh-tw                # деплой на сервер с Docker по SSH
+bash scripts/deploy_server.sh <ssh-хост>          # деплой на сервер с Docker по SSH
+.venv/bin/python -m scripts.dump_mcp_contracts     # обновить docs/mcp-contracts.md после правок сервера
 ```
 
 ## Архитектурные границы
