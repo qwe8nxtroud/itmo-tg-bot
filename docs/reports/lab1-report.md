@@ -204,7 +204,7 @@ PostgreSQL в контейнере.
 
 | № | Обязательный сценарий | Тест |
 |---:|---|---|
-| 1 | Сообщение уходит модели с инструкцией активного режима | `test_dialog.py::test_text_goes_to_model_with_default_mode_and_temperature` |
+| 1 | Сообщение уходит модели с инструкцией активного режима | `test_dialog.py::test_text_goes_to_model_with_study_mode_and_temperature` (в теге `lab1` — `…with_default_mode…`: в ЛР № 2 режим по умолчанию стал агентом, тест явно включает `/study`) |
 | 2 | Истории двух пользователей не смешиваются | `test_dialog.py::test_histories_of_two_users_do_not_mix` |
 | 3 | Сокращение истории без потери запроса и порядка | `test_dialog.py::test_history_limits_keep_current_request_and_order`, `test_assistant.py` |
 | 4 | Смена режима очищает историю и сохраняет режим | `test_dialog.py::test_mode_switch_clears_history_and_saves_mode` |
